@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Projective Transformation Demo</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      font-family: sans-serif;
+      text-align: center;
+      overflow: hidden; /* prevent scrolling */
+    }
+    /* Container occupies 80% of viewport width and 60% of viewport height,
+       with 5% vertical margin to avoid overflow */
+    #container {
+      width: 80vw;
+      height: 60vh;
+      margin: 5vh auto;
+      position: relative;
+    }
+    /* The canvas fills the container exactly */
+    #canvas {
+      width: 100%;
+      height: 100%;
+      border: 1px solid #ccc;
+      cursor: crosshair;
+      display: block;
+    }
+    #instructions {
+      margin: 10px;
+      font-size: 16px;
+    }
+    #controls {
+      margin-top: 10px;
+    }
+    #log {
+      margin-top: 10px;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <h1>Projective Transformation Demo</h1>
+  <div id="instructions">
+    1. Click on the canvas 4 times to select the desired final corner positions.<br>
+    2. Please select the four points in either clockwise 🔁 or counterclockwise 🔄 order.<br>
+    3. Click "Start Transformation" to apply the perspective transform.<br>
+    4. The transformed image will appear on the canvas.
+  </div>
+  
+  <div id="container">
+    <canvas id="canvas"></canvas>
+  </div>
+  
+  <div id="controls">
+    <button id="startBtn">Start Transformation</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+  
+  <div id="log">Please click 4 points on the canvas.</div>
+  
+  <script>
+    // Get references to DOM elements.
+    const container = document.getElementById('container');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const logDiv = document.getElementById('log');
+    
+    // Set canvas internal resolution to match container dimensions.
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+    
+    // Create an offscreen canvas to hold the hidden image.
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = canvas.width;
+    offscreenCanvas.height = canvas.height;
+    const offscreenCtx = offscreenCanvas.getContext('2d');
+    
+    // Load the image.
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = 'grid.png'; // source image
+    
+    // Variables to hold the source and destination corner positions.
+    let srcCorners = [];
+    let dstCorners = [];
+    let clickCount = 0;
+    
+    img.onload = function() {
+      // Scale the image to fit the canvas while preserving aspect ratio.
+      const scaleX = canvas.width / img.width;
+      const scaleY = canvas.height / img.height;
+      const scale = Math.min(scaleX, scaleY);
+      const newWidth = img.width * scale;
+      const newHeight = img.height * scale;
+      const offsetX = (canvas.width - newWidth) / 2;
+      const offsetY = (canvas.height - newHeight) / 2;
+      
+      // Draw the image offscreen.
+      offscreenCtx.clearRect(0, 0, canvas.width, canvas.height);
+      offscreenCtx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
+      
+      // Set the source corners based on where the image was drawn.
+      srcCorners = [
+        [offsetX, offsetY],
+        [offsetX + newWidth, offsetY],
+        [offsetX + newWidth, offsetY + newHeight],
+        [offsetX, offsetY + newHeight]
+      ];
+      
+      console.log("Image loaded and drawn offscreen.");
+    };
+    
+    // Reset function to clear selection and canvas.
+    function resetDemoState() {
+      dstCorners = [];
+      clickCount = 0;
+      logDiv.textContent = 'Please click 4 points on the canvas.';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    
+    // Capture 4 click positions on the visible canvas.
+    canvas.addEventListener('click', (e) => {
+      if (clickCount >= 4) {
+        logDiv.textContent = 'Already 4 points selected. Click "Start Transformation" or press "Reset" to try again.';
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      dstCorners.push([x, y]);
+      clickCount++;
+      
+      // Mark the selected point with a red dot.
+      ctx.fillStyle = "red";
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      if (clickCount < 4) {
+        logDiv.textContent = `Point ${clickCount} recorded. ${4 - clickCount} more to go...`;
+      } else {
+        logDiv.textContent = 'All 4 points recorded. Click "Start Transformation".';
+      }
+    });
+    
+    // When the user clicks "Start Transformation", apply the perspective warp.
+    startBtn.addEventListener('click', () => {
+      if (dstCorners.length < 4) {
+        logDiv.textContent = 'You must click 4 points first!';
+        return;
+      }
+      const H = getProjectiveTransformMatrix(srcCorners, dstCorners);
+      const invH = invert3x3(H);
+      if (!invH) {
+        logDiv.textContent = 'Transformation matrix is not invertible.';
+        return;
+      }
+      const imageDataOffscreen = offscreenCtx.getImageData(0, 0, canvas.width, canvas.height);
+      const dataOffscreen = imageDataOffscreen.data;
+      const imageDataOutput = ctx.createImageData(canvas.width, canvas.height);
+      const dataOutput = imageDataOutput.data;
+    
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          const denom = invH[6] * x + invH[7] * y + invH[8];
+          const srcX = (invH[0] * x + invH[1] * y + invH[2]) / denom;
+          const srcY = (invH[3] * x + invH[4] * y + invH[5]) / denom;
+          const sx = Math.floor(srcX);
+          const sy = Math.floor(srcY);
+          if (sx >= 0 && sx < canvas.width && sy >= 0 && sy < canvas.height) {
+            const srcIndex = (sy * canvas.width + sx) * 4;
+            const dstIndex = (y * canvas.width + x) * 4;
+            dataOutput[dstIndex]     = dataOffscreen[srcIndex];
+            dataOutput[dstIndex + 1] = dataOffscreen[srcIndex + 1];
+            dataOutput[dstIndex + 2] = dataOffscreen[srcIndex + 2];
+            dataOutput[dstIndex + 3] = dataOffscreen[srcIndex + 3];
+          }
+        }
+      }
+      ctx.putImageData(imageDataOutput, 0, 0);
+      logDiv.textContent = 'Transformation complete!';
+    });
+    
+    // Reset button clears the canvas and point selections.
+    resetBtn.addEventListener('click', resetDemoState);
+    
+    // ----- Utility functions for projective transform -----
+    function getProjectiveTransformMatrix(src, dst) {
+      const A = [];
+      const B = [];
+      for (let i = 0; i < 4; i++) {
+        const xs = src[i][0], ys = src[i][1];
+        const xd = dst[i][0], yd = dst[i][1];
+        A.push([ xs, ys, 1, 0, 0, 0, -xd * xs, -xd * ys ]);
+        B.push(xd);
+        A.push([ 0, 0, 0, xs, ys, 1, -yd * xs, -yd * ys ]);
+        B.push(yd);
+      }
+      const h = numericSolve(A, B);
+      h.push(1);
+      return h;
+    }
+    
+    function numericSolve(A, B) {
+      const n = A.length;
+      const m = A[0].length;
+      const M = [];
+      for (let i = 0; i < n; i++) {
+        M[i] = A[i].concat(B[i]);
+      }
+      for (let i = 0; i < m; i++) {
+        let maxRow = i;
+        for (let r = i + 1; r < n; r++) {
+          if (Math.abs(M[r][i]) > Math.abs(M[maxRow][i])) {
+            maxRow = r;
+          }
+        }
+        let tmp = M[i];
+        M[i] = M[maxRow];
+        M[maxRow] = tmp;
+        for (let r = i + 1; r < n; r++) {
+          const f = M[r][i] / M[i][i];
+          for (let c = i; c < m + 1; c++) {
+            M[r][c] -= M[i][c] * f;
+          }
+        }
+      }
+      const x = new Array(m);
+      for (let i = m - 1; i >= 0; i--) {
+        let s = M[i][m];
+        for (let c = i + 1; c < m; c++) {
+          s -= M[i][c] * x[c];
+        }
+        x[i] = s / M[i][i];
+      }
+      return x;
+    }
+    
+    function invert3x3(m) {
+      const det = m[0]*(m[4]*m[8] - m[5]*m[7])
+                - m[1]*(m[3]*m[8] - m[5]*m[6])
+                + m[2]*(m[3]*m[7] - m[4]*m[6]);
+      if (Math.abs(det) < 1e-14) return null;
+      const invDet = 1.0 / det;
+      const inv = [];
+      inv[0] =  (m[4]*m[8] - m[5]*m[7]) * invDet;
+      inv[1] = -(m[1]*m[8] - m[2]*m[7]) * invDet;
+      inv[2] =  (m[1]*m[5] - m[2]*m[4]) * invDet;
+      inv[3] = -(m[3]*m[8] - m[5]*m[6]) * invDet;
+      inv[4] =  (m[0]*m[8] - m[2]*m[6]) * invDet;
+      inv[5] = -(m[0]*m[5] - m[2]*m[3]) * invDet;
+      inv[6] =  (m[3]*m[7] - m[4]*m[6]) * invDet;
+      inv[7] = -(m[0]*m[7] - m[1]*m[6]) * invDet;
+      inv[8] =  (m[0]*m[4] - m[1]*m[3]) * invDet;
+      return inv;
+    }
+  </script>
+</body>
+</html>
